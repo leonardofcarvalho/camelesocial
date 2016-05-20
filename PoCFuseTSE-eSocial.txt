@@ -1,0 +1,28 @@
+sudo systemctl start postgresql
+
+cd /home/jpviragine/Desktop/PoCFuseTSE/
+watch -c -n1 tree -Cv EntradaXMLEventosAdmissao/ LotesXMLEventosAdmissao/ LotesXMLEventosAdmissaoAssinados/
+ 
+rm -rf EntradaXMLEventosAdmissao/* LotesXMLEventosAdmissao/* LotesXMLEventosAdmissaoAssinados/*
+cp eventos_xml_admissao.xml EntradaXMLEventosAdmissao/
+
+# Run PoC 
+cd /home/jpviragine/workspace91/PoCFuseTSE-eSocial 
+mvn jetty:run
+ 
+
+cd /opt/jboss/jasypt-1.9.2/bin
+./encrypt.sh input=esocial password=master-secret
+
+
+firefox -P FUSE --private-window http://127.0.0.1:8080/hawtio/ &
+
+delete from lotesadmissao 
+select * from lotesadmissao 
+
+psql -U postgres -c "select * from lotesadmissao"
+
+
+terminator --working-directory /home/jpviragine/Desktop/PoCFuseTSE/ -x watch -c -n1 tree -Cv EntradaXMLEventosAdmissao/ LotesXMLEventosAdmissao/ LotesXMLEventosAdmissaoAssinados/
+
+wsimport -keep -implServiceName ServicoEnviarLoteEventosImpl /home/jpviragine/workspace91/PoCFuseTSE-eSocial/src/main/resources/WSDL/WsEnviarLoteEventos-v1_1_0.wsdl

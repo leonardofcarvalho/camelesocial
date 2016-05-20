@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+	xmlns:amq="http://activemq.apache.org/schema/core" xmlns:camel="http://camel.apache.org/schema/spring"
+	xmlns:cxf="http://camel.apache.org/schema/cxf" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd http://camel.apache.org/schema/spring http://camel.apache.org/schema/spring/camel-spring.xsd         http://camel.apache.org/schema/cxf http://camel.apache.org/schema/cxf/camel-cxf.xsd http://activemq.apache.org/schema/core http://activemq.apache.org/schema/core/activemq-core.xsd">
+	<camel:keyStoreParameters id="signatureParams"
+		password="{{client.store.password}}" resource="./clientstore.jks" />
+	<bean class="org.apache.camel.component.jasypt.JasyptPropertiesParser"
+		id="jasypt">
+		<property name="password" value="master-secret" />
+	</bean>
+	<bean class="org.apache.camel.component.xmlsecurity.api.DefaultKeyAccessor"
+		id="signatureAccessor">
+		<property name="alias" value="esocialKey" />
+		<property name="password" value="{{client.key.password}}" />
+		<property name="keyStoreParameters" ref="signatureParams" />
+	</bean>
+	<bean class="org.apache.camel.processor.BodyInAggregatingStrategy"
+		id="aggregatorStrategy" />
+	<bean class="org.apache.commons.dbcp.BasicDataSource" id="datasource">
+		<property name="driverClassName" value="org.postgresql.Driver" />
+		<property name="url" value="jdbc:postgresql://localhost:5432/esocial" />
+		<property name="username" value="postgres" />
+		<property name="password" value="postgres" />
+		<property name="initialSize" value="5" />
+		<property name="maxActive" value="10" />
+	</bean>
+	<bean class="org.apache.camel.component.sql.SqlComponent" id="sql">
+		<property name="dataSource" ref="datasource" />
+	</bean>
+	<!-- This creates an embedded ActiveMQ Broker -->
+	<broker persistent="false" useJmx="true"
+		xmlns="http://activemq.apache.org/schema/core">
+		<transportConnectors>
+			<transportConnector uri="tcp://localhost:0" />
+		</transportConnectors>
+	</broker>
+	<!-- Lets connect the Camel ActiveMQ component to the embedded broker. See 
+		http://camel.apache.org/activemq.html for more information. -->
+	<bean class="org.apache.activemq.camel.component.ActiveMQComponent"
+		id="activemq">
+		<property name="brokerURL" value="vm://localhost?create=false" />
+		<property name="userName" value="admin" />
+		<property name="password" value="admin" />
+	</bean>
+	<cxf:cxfEndpoint
+		address="http://localhost:8080/PoCFuseTSE-eSocial-WS/ServicoEnviarLoteEventos?wsdl"
+		id="ServicoEnviarLoteEventosEndpoint" />
+	<camelContext id="camelContext-PoCFuseTSE-eSocial" xmlns="http://camel.apache.org/schema/spring">
+		<propertyPlaceholder id="properties"
+			location="classpath:config.properties" propertiesParserRef="jasypt" />
+		<route id="_geraLoteEventosAdmissaoRoute">
+			<from id="_fromEntradaXMLEventosAdmissao" uri="file:{{file.directory}}/EntradaXMLEventosAdmissao" />
+			<enrich id="_enrichXMLEventosAdmissao" uri="direct:enrichXMLEventosAdmissaoRoute" />
+			<to id="_toGeraLoteXMLEventosAdmissaoRoute" uri="direct:geraLoteXMLEventosAdmissaoRoute" />
+		</route>
+		<route id="_enrichXMLEventosAdmissaoRoute">
+			<from id="_fromEnrichXMLEventosAdmissaoRoute" uri="direct:enrichXMLEventosAdmissaoRoute" />
+			<split id="_splitXMLEventosAdmissao" strategyRef="aggregatorStrategy"
+				streaming="true">
+				<tokenize token="eSocial" xml="true" />
+				<setHeader headerName="eventoId" id="_setEventoId">
+					<xpath resultType="java.lang.String">eSocial/evtAdmissao/@id</xpath>
+				</setHeader>
+				<to id="_toFreeMarkerEventosAdmissao" uri="freemarker:EventosAdmissao.ftl" />
+			</split>
+		</route>
+		<route id="_geraLoteXMLEventosAdmissaoRoute">
+			<from id="_fromEntradaXMLEventosAdmissaoRoute" uri="direct:geraLoteXMLEventosAdmissaoRoute" />
+			<split id="_splitEventosAdmissao" strategyRef="aggregatorStrategy"
+				streaming="true">
+				<tokenize group="50" token="evento" xml="true" />
+				<log id="_logSplitXMLLoteEventosAdmissao" message="Gerando Lote [Número: ${header.CamelSplitIndex}]" />
+				<to id="_toFreeMarkerEnvioLoteEventosAdmissao" uri="freemarker:EnvioLoteEventosAdmissao.ftl" />
+				<to id="_to1" uri="validator:XSD/Envio/EnvioLoteEventos-v1_1_0.xsd" />
+				<setHeader headerName="CamelFileName" id="_setHeaderCamelFileName">
+					<simple>EventosAdmissaoLote-${date:now:yyyyMMdd}-${header.CamelSplitIndex}.xml</simple>
+				</setHeader>
+				<to id="_toLotesXMLEventosAdmissao" uri="file:{{file.directory}}/LotesXMLEventosAdmissao" />
+			</split>
+		</route>
+		<route id="_assinaLoteXMLEventosAdmissaoRoute">
+			<from id="_fromLotesXMLEventosAdmissao" uri="file:{{file.directory}}/LotesXMLEventosAdmissao" />
+			<log id="_logAssinaturaLotesXMLEventosAdmissao" message="Assinando Lote [Arquivo: ${file:name}]" />
+			<to id="_toAssinaXMLEventosAdmissao"
+				uri="xmlsecurity:sign://detached?keyAccessor=#signatureAccessor&amp;plainText=true" />
+			<multicast id="_multicastWSBD">
+				<to id="_toAMQLOTESESOCIAL" uri="activemq:queue:LOTES_ESOCIAL" />
+				<to id="_toLotesXMLEventosAdmissaoAssinados"
+					uri="file:{{file.directory}}/LotesXMLEventosAdmissaoAssinados?fileName=${file:name.noext}-Assinado.${file:name.ext}" />
+			</multicast>
+		</route>
+		<route id="_enviaLoteXMLEventosAdmissaoRoute">
+			<from id="_fromLotesXMLEventosAdmissaoAssinados" uri="activemq:queue:LOTES_ESOCIAL" />
+			<convertBodyTo id="_convertBodyTo1" type="java.lang.String" />
+			<wireTap id="_wireTapGravaLoteDataBase" uri="sql:{{sql.insertTableLotesXMLEventosAdmissao}}">
+				<setHeader headerName="loteID">
+					<simple>'${file:name}'</simple>
+				</setHeader>
+				<setHeader headerName="lote">
+					<simple>${body}</simple>
+				</setHeader>
+			</wireTap>
+			<to id="_toFreemarkerEnviaLoteSOAPRequestTemplate" uri="freemarker:EnviaLoteSOAPRequestTemplate.ftl" />
+			<log id="_logEnviandoLoteXMLEventosAdmissao" message="Enviando Lote Eventos Admissão [Lote: ${file:name}]" />
+			<to id="_toCXFServicoEnviarLoteEventos"
+				uri="cxf:bean:ServicoEnviarLoteEventosEndpoint?dataFormat=MESSAGE" />
+		</route>
+		<route autoStartup="false" id="_criaTabelaLotesXMLEventosAdmissaoRoute">
+			<from id="_fromTimer" uri="timer:foo?repeatCount=1" />
+			<log id="_logCriandoTabelaLotesXMLEventosAdmissao" message="Criando a tabela de Lotes Eventos Admissão" />
+			<to id="_toSQLCriaTabelaLotesXMLEventosAdmissao" uri="sql:{{sql.createTableLotesXMLEventosAdmissao}}" />
+			<log id="_logTabelaLotesXMLEventosAdmissaoCriadaComSucesso"
+				message="Tabela Lotes Eventos Admissão criada com sucesso!" />
+		</route>
+	</camelContext>
+</beans>

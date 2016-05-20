@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+	xmlns:camel="http://camel.apache.org/schema/spring" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="        http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd        http://camel.apache.org/schema/spring http://camel.apache.org/schema/spring/camel-spring.xsd">
+
+	<camel:keyStoreParameters id="signatureParams"
+		resource="./clientstore.jks" password="{{client.store.password}}" />
+
+	<bean id="jasypt"
+		class="org.apache.camel.component.jasypt.JasyptPropertiesParser">
+		<!-- password is mandatory, you can prefix it with sysenv: or sys: to indicate 
+			it should use an OS environment or JVM system property value, so you dont 
+			have the master password defined here -->
+		<!-- property name="password" value="sys:PASSWORD" / -->
+		<property name="password" value="sys:PASSWORD" />
+	</bean>
+
+	<bean id="signatureAccessor"
+		class="org.apache.camel.component.xmlsecurity.api.DefaultKeyAccessor">
+		<property name="alias" value="myclientkey" />
+		<property name="password" value="{{client.key.password}}" />
+		<property name="keyStoreParameters" ref="signatureParams" />
+	</bean>
+
+	<camelContext id="camelContext-fcf84330-c685-48bb-9264-6ad8aba4f061"
+		xmlns="http://camel.apache.org/schema/spring">
+		<!-- propertyPlaceholder id="placeholder" location="classpath:config.properties" 
+			/ -->
+		<propertyPlaceholder id="properties"
+			location="classpath:config.properties" propertiesParserRef="jasypt" />
+		<route id="geraLoteXMLAdmissao">
+			<from id="_fromEntradaXMLAdmissao" uri="file:{{file.directory}}/EntradaXMLAdmissao" />
+			<split id="_splitXMLAdmissao" streaming="true">
+				<tokenize group="50" token="eSocial" xml="true" />
+				<log id="_logSplit"
+					message="Gerando Lote [Número: ${header.CamelSplitIndex}]: ${body}" />
+				<setHeader headerName="CamelFileName" id="_setHeaderCamelFileName">
+					<simple>Lote-${date:now:yyyyMMdd}-${header.CamelSplitIndex}.xml</simple>
+				</setHeader>
+				<to id="_toLotesXMLAdmissao" uri="file:{{file.directory}}/LotesXMLAdmissao" />
+			</split>
+		</route>
+		<route id="assinaLoteXMLAdmissao">
+			<from id="_fromLotesXMLAdmissao" uri="file:{{file.directory}}/LotesXMLAdmissao" />
+			<log id="_logAssinatura" message="Assinando Lote [Número: ${file:name}]: ${body}" />
+			<to
+				uri="xmlsecurity:sign://enveloped?keyAccessor=#signatureAccessor&amp;parentLocalName=PaymentInfo&amp;parentNamespace=urn:example:po" />
+			<to id="_toLotesXMLAdmissaoAssinados"
+				uri="file:{{file.directory}}/LotesXMLAdmissaoAssinados?fileName=${file:name.noext}-Assinado.${file:name.ext}" />
+		</route>
+	</camelContext>
+</beans>
